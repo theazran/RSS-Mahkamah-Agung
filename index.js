@@ -35,12 +35,51 @@ const cleanUrl = (link, baseUrl) => {
     }
 };
 
+const parseIndoDate = (str) => {
+    if (!str) return null;
+    const months = {
+        'januari': '01', 'februari': '02', 'maret': '03', 'april': '04', 'mei': '05', 'juni': '06',
+        'juli': '07', 'agustus': '08', 'september': '09', 'oktober': '10', 'november': '11', 'desember': '12',
+        'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04', 'mei': '05', 'jun': '06',
+        'jul': '07', 'agu': '08', 'sep': '09', 'okt': '10', 'nov': '11', 'des': '12'
+    };
+    let clean = str.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').trim();
+    const parts = clean.split(/\s+/);
+    
+    let day, month, year, time = '00:00:00';
+    
+    // Pattern: 13 Maret 2026 or 13-Mar-2026
+    // find index that is a month name
+    let monthIdx = parts.findIndex(p => months[p]);
+    if (monthIdx !== -1) {
+        month = months[parts[monthIdx]];
+        day = parts[monthIdx - 1];
+        year = parts[monthIdx + 1];
+        // optional time
+        let timePart = parts.find(p => p.includes(':'));
+        if (timePart) time = timePart;
+    } else {
+        // try DD MM YYYY
+        const d = parts.filter(p => /^\d+$/.test(p));
+        if (d.length >= 3) {
+            day = d[0]; month = d[1]; year = d[2];
+        }
+    }
+
+    if (day && month && year) {
+        const iso = `${year}-${month.padStart(2,'0')}-${day.padStart(2,'0')}T${time}`;
+        const d = new Date(iso);
+        return isNaN(d.getTime()) ? str : d;
+    }
+    return str;
+};
+
 // Generic parser for Joomla/WordPress style news lists
 const parseGenericNews = (html, baseUrl) => {
     const $ = cheerio.load(html);
     const items = [];
     
-    // Selectors usually containing titles with links in Joomla/WP
+    // Selectors biasanya mengandung judul
     const titleSelectors = [
         '.item-title a', '.article-title a', '.page-header a',
         'h2.title a', 'h3.title a', 'h1.title a',
@@ -48,7 +87,7 @@ const parseGenericNews = (html, baseUrl) => {
         '.category-list td.list-title a', 
         '.art-postheader a',
         'table.zebra td a', 'table tbody td:first-child a',
-        '.postheader a', 'h2.postheader' // Added h2.postheader for PT Makassar/Artisteer
+        '.postheader a', 'h2.postheader'
     ];
 
     let elements = [];
@@ -60,7 +99,6 @@ const parseGenericNews = (html, baseUrl) => {
         }
     }
 
-    // Fallback if none of the above match well
     if (elements.length === 0) {
         elements = $('h2 a, h3 a, h4 a, dt a');
     }
@@ -69,7 +107,6 @@ const parseGenericNews = (html, baseUrl) => {
         let title = $(el).text().trim().replace(/\s+/g, ' ');
         let link = $(el).attr('href');
         
-        // If the element itself is not a link (like h2.postheader), look for the link in the parent or siblings
         if (!link) {
             const parent = $(el).closest('.art-post, .post, .item, .article, .blog-post, div');
             link = parent.find('a[href*="/berita/"], a[href*="/en/berita/"], a.csbutton-color, a.readmore').first().attr('href');
@@ -79,9 +116,18 @@ const parseGenericNews = (html, baseUrl) => {
         link = cleanUrl(link, baseUrl);
         
         let description = '';
-        let parent = $(el).closest('.art-post, .post, .item, .article, .blog-post, .row, div');
+        let date = null;
+        let parent = $(el).closest('.art-post, .post, .item, .article, .blog-post, .row, div, tr');
         if (parent.length) {
-            let pText = parent.find('p, .intro-text, td:nth-child(2)').first().text().trim();
+            // Find Date: usually in small, span.date, or specific table cells
+            let dateText = parent.find('.date, .created, .publish_up, .art-postheadericons, time, td:nth-child(2)').text().trim();
+            // If it's PT Makassar (artisteer), it might be separate. 
+            // If using table (Badilum), td:nth-child(2) is the date
+            if (dateText) {
+                date = parseIndoDate(dateText);
+            }
+
+            let pText = parent.find('p, .intro-text').first().text().trim();
             if (pText) description = pText;
         }
 
@@ -90,7 +136,8 @@ const parseGenericNews = (html, baseUrl) => {
                 title, 
                 url: link, 
                 guid: link,
-                description 
+                description,
+                date: date || new Date()
             });
         }
     });
@@ -119,7 +166,7 @@ const fetchMaApi = async (cat_id) => {
             url: item.url,
             guid: item.url,
             description: `${item.pt || ''} - ${item.author || ''}`,
-            date: item.pt || new Date()
+            date: parseIndoDate(item.pt) || new Date()
         }));
     }
     return [];
