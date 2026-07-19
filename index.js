@@ -1,19 +1,35 @@
 const express = require('express');
-const axios = require('axios');
 const cheerio = require('cheerio');
 const RSS = require('rss');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Helper to make generic HTTP request with typical browser user-agent
+
+let gotScrapingInstance = null;
+const getGotScraping = async () => {
+    if (!gotScrapingInstance) {
+        const { gotScraping } = await import('got-scraping');
+        gotScrapingInstance = gotScraping;
+    }
+    return gotScrapingInstance;
+};
+
+// Pengganti Axios untuk fetchUrl generik (Badilum & PT Makassar)
 const fetchUrl = async (url) => {
-    return axios.get(url, {
-        headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        },
-        timeout: 15000
+    const scraper = await getGotScraping();
+    const response = await scraper({
+        url: url,
+        method: 'GET',
+        timeout: { request: 15000 },
+        headerGeneratorOptions: {
+            browsers: [{ name: 'chrome' }],
+            devices: ['desktop'],
+            operatingSystems: ['windows'],
+        }
     });
+    // Mengembalikan objek tiruan agar `.data` di kode lama tidak patah
+    return { data: response.body };
 };
 
 const cleanUrl = (link, baseUrl) => {
@@ -24,7 +40,6 @@ const cleanUrl = (link, baseUrl) => {
         if (link.startsWith('/')) {
             return urlObj.origin + link;
         } else {
-            // relative link
             const parts = urlObj.pathname.split('/');
             parts.pop();
             const parentPath = parts.join('/');
@@ -45,21 +60,17 @@ const parseIndoDate = (str) => {
     };
     let clean = str.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').trim();
     const parts = clean.split(/\s+/);
-    
+
     let day, month, year, time = '00:00:00';
-    
-    // Pattern: 13 Maret 2026 or 13-Mar-2026
-    // find index that is a month name
+
     let monthIdx = parts.findIndex(p => months[p]);
     if (monthIdx !== -1) {
         month = months[parts[monthIdx]];
         day = parts[monthIdx - 1];
         year = parts[monthIdx + 1];
-        // optional time
         let timePart = parts.find(p => p.includes(':'));
         if (timePart) time = timePart;
     } else {
-        // try DD MM YYYY
         const d = parts.filter(p => /^\d+$/.test(p));
         if (d.length >= 3) {
             day = d[0]; month = d[1]; year = d[2];
@@ -67,7 +78,7 @@ const parseIndoDate = (str) => {
     }
 
     if (day && month && year) {
-        const iso = `${year}-${month.padStart(2,'0')}-${day.padStart(2,'0')}T${time}`;
+        const iso = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${time}`;
         const d = new Date(iso);
         return isNaN(d.getTime()) ? str : d;
     }
@@ -78,13 +89,12 @@ const parseIndoDate = (str) => {
 const parseGenericNews = (html, baseUrl) => {
     const $ = cheerio.load(html);
     const items = [];
-    
-    // Selectors biasanya mengandung judul
+
     const titleSelectors = [
         '.item-title a', '.article-title a', '.page-header a',
         'h2.title a', 'h3.title a', 'h1.title a',
-        '.blog h2 a', '.blog h3 a', 
-        '.category-list td.list-title a', 
+        '.blog h2 a', '.blog h3 a',
+        '.category-list td.list-title a',
         '.art-postheader a',
         'table.zebra td a', 'table tbody td:first-child a',
         '.postheader a', 'h2.postheader'
@@ -106,7 +116,7 @@ const parseGenericNews = (html, baseUrl) => {
     elements.each((i, el) => {
         let title = $(el).text().trim().replace(/\s+/g, ' ');
         let link = $(el).attr('href');
-        
+
         if (!link) {
             const parent = $(el).closest('.art-post, .post, .item, .article, .blog-post, div');
             link = parent.find('a[href*="/berita/"], a[href*="/en/berita/"], a.csbutton-color, a.readmore').first().attr('href');
@@ -114,15 +124,12 @@ const parseGenericNews = (html, baseUrl) => {
 
         if (!title || !link || link === '#') return;
         link = cleanUrl(link, baseUrl);
-        
+
         let description = '';
         let date = null;
         let parent = $(el).closest('.art-post, .post, .item, .article, .blog-post, .row, div, tr');
         if (parent.length) {
-            // Find Date: usually in small, span.date, or specific table cells
             let dateText = parent.find('.date, .created, .publish_up, .art-postheadericons, time, td:nth-child(2)').text().trim();
-            // If it's PT Makassar (artisteer), it might be separate. 
-            // If using table (Badilum), td:nth-child(2) is the date
             if (dateText) {
                 date = parseIndoDate(dateText);
             }
@@ -132,9 +139,9 @@ const parseGenericNews = (html, baseUrl) => {
         }
 
         if (!items.find(x => x.url === link) && title.length > 5 && !title.includes('Read more') && !title.includes('baca selengkapnya')) {
-            items.push({ 
-                title, 
-                url: link, 
+            items.push({
+                title,
+                url: link,
                 guid: link,
                 description,
                 date: date || new Date()
@@ -145,23 +152,34 @@ const parseGenericNews = (html, baseUrl) => {
     return items;
 };
 
-// MA API fetcher
+
 const fetchMaApi = async (cat_id) => {
+    const scraper = await getGotScraping();
     const fd = new URLSearchParams();
     fd.append('cat_id', cat_id);
     fd.append('page', "1");
     fd.append('lang', "id");
 
-    const res = await axios.post('https://mahkamahagung.go.id/id/berita', fd.toString(), {
+    const res = await scraper({
+        url: 'https://www.mahkamahagung.go.id/id/berita',
+        method: 'POST',
+        body: fd.toString(),
         headers: {
-            'User-Agent': 'Mozilla/5.0',
             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'X-Requested-With': 'XMLHttpRequest'
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': 'https://www.mahkamahagung.go.id/id/berita'
+        },
+        headerGeneratorOptions: {
+            browsers: [{ name: 'chrome' }],
+            devices: ['desktop'],
+            operatingSystems: ['windows'],
         }
     });
 
-    if (res.data && res.data.stat === 'OK' && res.data.data && res.data.data.rows) {
-        return res.data.data.rows.map(item => ({
+    const data = JSON.parse(res.body);
+
+    if (data && data.stat === 'OK' && data.data && data.data.rows) {
+        return data.data.rows.map(item => ({
             title: item.title,
             url: item.url,
             guid: item.url,
@@ -175,8 +193,8 @@ const fetchMaApi = async (cat_id) => {
 app.get('/rss/ma/berita', async (req, res) => {
     try {
         const items = await fetchMaApi("1");
-        const feed = new RSS({ 
-            title: 'MA - Berita', 
+        const feed = new RSS({
+            title: 'MA - Berita',
             site_url: 'https://mahkamahagung.go.id/id/berita',
             feed_url: `https://${req.get('host')}/rss/ma/berita`
         });
@@ -185,14 +203,15 @@ app.get('/rss/ma/berita', async (req, res) => {
         res.send(feed.xml());
     } catch (e) {
         res.status(500).send(e.message);
+        console.log(e);
     }
 });
 
 app.get('/rss/ma/pengumuman', async (req, res) => {
     try {
         const items = await fetchMaApi("2");
-        const feed = new RSS({ 
-            title: 'MA - Pengumuman', 
+        const feed = new RSS({
+            title: 'MA - Pengumuman',
             site_url: 'https://mahkamahagung.go.id/id/pengumuman',
             feed_url: `https://${req.get('host')}/rss/ma/pengumuman`
         });
@@ -209,8 +228,8 @@ app.get('/rss/badilum/berita', async (req, res) => {
         const url = 'https://badilum.mahkamahagung.go.id/berita/berita-kegiatan.html';
         const response = await fetchUrl(url);
         const items = parseGenericNews(response.data, url);
-        const feed = new RSS({ 
-            title: 'Badilum - Berita Kegiatan', 
+        const feed = new RSS({
+            title: 'Badilum - Berita Kegiatan',
             site_url: url,
             feed_url: `https://${req.get('host')}/rss/badilum/berita`
         });
@@ -227,8 +246,8 @@ app.get('/rss/badilum/pengumuman', async (req, res) => {
         const url = 'https://badilum.mahkamahagung.go.id/berita/pengumuman-surat-dinas.html';
         const response = await fetchUrl(url);
         const items = parseGenericNews(response.data, url);
-        const feed = new RSS({ 
-            title: 'Badilum - Pengumuman Surat Dinas', 
+        const feed = new RSS({
+            title: 'Badilum - Pengumuman Surat Dinas',
             site_url: url,
             feed_url: `https://${req.get('host')}/rss/badilum/pengumuman`
         });
@@ -242,11 +261,11 @@ app.get('/rss/badilum/pengumuman', async (req, res) => {
 
 app.get('/rss/pt-makassar/berita', async (req, res) => {
     try {
-        const url = 'https://pt-makassar.go.id/en/berita/berita-terkini';
+        const url = 'https://pt-makassar.go.id/';
         const response = await fetchUrl(url);
         const items = parseGenericNews(response.data, url);
-        const feed = new RSS({ 
-            title: 'PT Makassar - Berita Terkini', 
+        const feed = new RSS({
+            title: 'PT Makassar - Berita Terkini',
             site_url: url,
             feed_url: `https://${req.get('host')}/rss/pt-makassar/berita`
         });
@@ -303,10 +322,8 @@ app.get('/', (req, res) => {
     res.send(html);
 });
 
-// Export app untuk Vercel
 module.exports = app;
 
-// Jalankan server jika dijalankan secara lokal
 if (require.main === module) {
     app.listen(PORT, () => {
         console.log(`RSS Scraper server running on http://localhost:${PORT}`);
