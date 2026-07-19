@@ -63,6 +63,11 @@ const parseIndoDate = (str) => {
 
     let day, month, year, time = '00:00:00';
 
+<<<<<<< HEAD
+=======
+    // Pattern: 13 Maret 2026 or 13-Mar-2026
+    // find index that is a month name
+>>>>>>> 373442b16dc1a61c1a326cb6df49c5833fb3406e
     let monthIdx = parts.findIndex(p => months[p]);
     if (monthIdx !== -1) {
         month = months[parts[monthIdx]];
@@ -90,6 +95,10 @@ const parseGenericNews = (html, baseUrl) => {
     const $ = cheerio.load(html);
     const items = [];
 
+<<<<<<< HEAD
+=======
+    // Selectors biasanya mengandung judul
+>>>>>>> 373442b16dc1a61c1a326cb6df49c5833fb3406e
     const titleSelectors = [
         '.item-title a', '.article-title a', '.page-header a',
         'h2.title a', 'h3.title a', 'h1.title a',
